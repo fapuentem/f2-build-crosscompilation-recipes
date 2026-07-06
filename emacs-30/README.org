@@ -1,0 +1,407 @@
+#+TITLE: Emacs 30 Cross-Build Recipe for Jetson Orin NX
+#+AUTHOR: Fabricio Puente Mansilla
+#+DATE: <2026-07-06 Mon>
+#+OPTIONS: toc:2 num:nil
+#+PROPERTY: header-args :results silent :exports both
+
+This repository builds Emacs 30 for a Jetson Orin NX 8GB running
+JetPack 5.1.2.
+
+The build is started from an x86 Ubuntu workstation, but the actual
+build runs inside an ARM64 Ubuntu 20.04 Docker container through
+Docker Buildx and QEMU. This avoids most Emacs cross-compilation
+issues because Emacs can run its ARM64 build-time helper programs
+inside the emulated ARM64 container.
+
+This README is the single source of truth. The Dockerfile is generated
+from the source block in this file using Org Babel tangling.
+
+* Target
+
+- Host machine: x86_64 Ubuntu 24.04
+- Target device: Jetson Orin NX 8GB
+- Target OS: JetPack 5.1.2 / Ubuntu 20.04 based root filesystem
+- Target architecture: ARM64 / aarch64
+- Default Emacs version: 30.2
+- Default install prefix on the Jetson: ~/opt/emacs-30.2~
+
+* Repository layout
+
+After tangling, the repository should look like this:
+
+#+BEGIN_SRC text
+  emacs-30/
+  ├── README.org
+  └── Dockerfile.emacs30-jetpack512
+#+END_SRC
+
+After building, the local artifact directory should look like this:
+
+#+BEGIN_SRC text
+  emacs-30/
+  ├── README.org
+  ├── Dockerfile.emacs30-jetpack512
+  └── out/
+      ├── emacs-30.2-aarch64-ubuntu20.04-terminal.tar.xz
+      ├── emacs-30.2-aarch64-ubuntu20.04-terminal.file.txt
+      └── emacs-30.2-aarch64-ubuntu20.04-terminal.smoke.txt
+#+END_SRC
+
+* Why Buildx is used
+
+A normal Docker build on the workstation would build for x86_64. The
+Jetson needs ARM64 binaries.
+
+Docker Buildx allows the workstation to build for another
+architecture:
+
+#+BEGIN_SRC bash :exports code
+  docker buildx build --platform linux/arm64 ...
+#+END_SRC
+
+This recipe uses an ARM64 Ubuntu 20.04 container because JetPack 5.1.2
+is based on Ubuntu 20.04. This prevents linking Emacs against newer
+Ubuntu 24.04 libraries that may not exist on the Jetson.
+
+* Host setup
+
+Run this once on the x86 Ubuntu workstation.
+
+#+BEGIN_SRC bash :exports code
+  sudo apt update
+  # Here we are assuming that the latest Docker engine is installed in the workstation
+  # sudo apt install -y docker.io
+  sudo apt install -y qemu-user-static binfmt-support
+
+  sudo systemctl restart --now docker
+  docker run --privileged --rm tonistiigi/binfmt --install arm64
+#+END_SRC
+
+Create and initialize a Buildx builder:
+
+#+BEGIN_SRC bash :exports code
+  docker buildx create --name jetson-arm64-builder --use 2>/dev/null || \
+    docker buildx use jetson-arm64-builder
+
+  docker buildx inspect --bootstrap
+#+END_SRC
+
+Test that ARM64 containers can run on the x86 workstation:
+
+#+BEGIN_SRC bash :exports code
+  docker run --rm --platform linux/arm64 ubuntu:20.04 uname -m
+#+END_SRC
+
+Expected output:
+
+#+BEGIN_SRC text
+  aarch64
+#+END_SRC
+
+* Tangle the Dockerfile from this README
+
+From Emacs, open this file and run:
+
+#+BEGIN_SRC text :exports code
+  M-x org-babel-tangle
+#+END_SRC
+
+This creates or updates:
+
+#+BEGIN_SRC text
+  Dockerfile.emacs30-jetpack512
+#+END_SRC
+
+* Build terminal-only Emacs
+
+This is the recommended first build. It avoids GUI and native-comp dependencies.
+
+#+BEGIN_SRC bash :exports code
+  docker buildx build \
+     --platform linux/arm64 \
+     --target artifact \
+     --output type=local,dest=out \
+     -f Dockerfile.emacs30-jetpack512 \
+     --build-arg EMACS_VER=30.2 \
+     --build-arg FLAVOR=terminal \
+     --build-arg NATIVE=no \
+     --build-arg TREE_SITTER=no \
+     --build-arg JOBS=4 \
+     .
+#+END_SRC
+
+Check the result:
+
+#+BEGIN_SRC bash :exports code
+  ls -lh out/
+  cat out/emacs-30.2-aarch64-ubuntu20.04-terminal.file.txt
+  cat out/emacs-30.2-aarch64-ubuntu20.04-terminal.smoke.txt
+#+END_SRC
+
+The file report should mention ARM aarch64.
+
+* Build GTK/X11 Emacs
+
+Use this after the terminal build works.
+
+#+BEGIN_SRC bash :exports code
+  sudo docker buildx build \
+    --platform linux/arm64 \
+    --target artifact \
+    --output type=local,dest=out \
+    -f Dockerfile.emacs30-jetpack512 \
+    --build-arg EMACS_VER=30.2 \
+    --build-arg FLAVOR=gtk-x11 \
+    --build-arg NATIVE=no \
+    --build-arg TREE_SITTER=no \
+    --build-arg JOBS=4 \
+    .
+#+END_SRC
+
+* Build argument reference
+
+| Argument    | Default  | Values                   | Description                                          |
+|-------------+----------+--------------------------+------------------------------------------------------|
+| EMACS_VER   | 30.2     | 30.1, 30.2, etc.         | Emacs version from the GNU source archive.           |
+| UBUNTU_TAG  | 20.04    | 20.04                    | Keep this as 20.04 for JetPack 5.1.2.                |
+| FLAVOR      | terminal | terminal, gtk-x11, pgtk  | Selects terminal or GUI build.                       |
+| NATIVE      | no       | no, yes, aot             | Controls Emacs native compilation.                   |
+| TREE_SITTER | no       | no, yes                  | Enables or disables tree-sitter support.             |
+| JOBS        | 4        | Any positive integer     | Parallel jobs for make.                              |
+| PREFIX      | empty    | Example: /opt/emacs-30.2 | Install prefix. Defaults to /opt/emacs-${EMACS_VER}. |
+
+* Copy the artifact to the Jetson
+
+#+BEGIN_QUOTE
+*Single point of change — target host:* The named block =f2sc01-target=
+below defines the host used by all shell blocks in this and subsequent
+sections. Set it to either the IP address (=192.168.1.247=) or the
+mDNS hostname (=f2-smart-controller.local=) and evaluate it once with
+=C-c C-c= before proceeding.
+#+END_QUOTE
+
+#+NAME: f2sc01-target
+#+BEGIN_SRC sh :results silent :exports none
+  # Set to IP (e.g. 192.168.1.247) or mDNS hostname (f2-smart-controller.local)
+  echo "192.168.1.247"
+#+END_SRC
+
+#+NAME: f2sc01-ssh-pass
+#+BEGIN_SRC sh :results silent :exports none
+  # Default Jetson password — replace before any production deployment
+  echo "nvidia"
+#+END_SRC
+
+Replace ~jetson-user~ and ~JETSON_IP~ with your real SSH user and target
+address.
+
+#+BEGIN_SRC bash :exports code :var TARGET_HOST=f2sc01-target() :var SSH_PASS=f2sc01-ssh-pass()
+  sshpass -p "${SSH_PASS}" scp out/emacs-30.2-aarch64-ubuntu20.04-terminal.tar.xz \
+    jetson-user@${TARGET_HOST}:/tmp/
+#+END_SRC
+
+On the Jetson:
+
+#+BEGIN_SRC bash :exports code
+  sudo tar -C / -xaf /tmp/emacs-30.2-aarch64-ubuntu20.04-terminal.tar.xz
+
+  sudo ln -sf /opt/emacs-30.2/bin/emacs /usr/local/bin/emacs30
+  sudo ln -sf /opt/emacs-30.2/bin/emacsclient /usr/local/bin/emacsclient30
+#+END_SRC
+
+Test on the Jetson:
+
+#+BEGIN_SRC bash :exports code
+  emacs30 --version
+  emacs30 --batch --eval '(princ system-configuration)'
+  echo
+#+END_SRC
+
+Check missing runtime libraries:
+
+#+BEGIN_SRC bash :exports code
+  ldd /opt/emacs-30.2/bin/emacs | grep 'not found' || true
+#+END_SRC
+
+* Runtime packages on the Jetson
+
+For the terminal build, install these on JetPack 5.1.2 if needed:
+
+#+BEGIN_SRC bash :exports code
+  sudo apt update
+  sudo apt install -y \
+    libgnutls30 libxml2 libjansson4 libsqlite3-0 zlib1g \
+    libacl1 libselinux1 libncursesw6
+#+END_SRC
+
+For the GTK/X11 build, install these if needed:
+
+#+BEGIN_SRC bash :exports code
+  sudo apt update
+  sudo apt install -y \
+    libgtk-3-0 libcairo2 libx11-6 libxpm4 libjpeg-turbo8 \
+    libpng16-16 libgif7 libtiff5 librsvg2-2 libwebp6 \
+    libxft2 libxinerama1 libxrandr2 libxfixes3 libdbus-1-3 \
+    libgnutls30 libxml2 libjansson4 libsqlite3-0
+#+END_SRC
+
+* Dockerfile source
+
+This block is tangled into ~Dockerfile.emacs30-jetpack512~.
+
+#+BEGIN_SRC dockerfile :tangle Dockerfile.emacs30-jetpack512
+  # syntax=docker/dockerfile:1.7
+
+  ARG UBUNTU_TAG=20.04
+  FROM ubuntu:${UBUNTU_TAG} AS build
+
+  ARG EMACS_VER=30.2
+  ARG PREFIX=
+  ARG FLAVOR=terminal
+  ARG NATIVE=no
+  ARG TREE_SITTER=no
+  ARG JOBS=4
+
+  ENV DEBIAN_FRONTEND=noninteractive
+  SHELL ["/bin/bash", "-euxo", "pipefail", "-c"]
+
+  RUN apt-get update && \
+      apt-get install -y --no-install-recommends \
+        ca-certificates \
+        wget \
+        xz-utils \
+        file \
+        pkg-config \
+        build-essential \
+        texinfo \
+        libncurses-dev \
+        libgnutls28-dev \
+        libxml2-dev \
+        libjansson-dev \
+        libsqlite3-dev \
+        zlib1g-dev \
+        libacl1-dev \
+        libselinux1-dev && \
+      rm -rf /var/lib/apt/lists/*
+
+  RUN if [[ "${TREE_SITTER}" == "yes" ]]; then \
+        apt-get update && \
+        apt-get install -y --no-install-recommends libtree-sitter-dev && \
+        rm -rf /var/lib/apt/lists/*; \
+      fi
+
+  RUN if [[ "${FLAVOR}" == "gtk-x11" ]]; then \
+        apt-get update && \
+        apt-get install -y --no-install-recommends \
+          libgtk-3-dev \
+          libcairo2-dev \
+          libx11-dev \
+          libxpm-dev \
+          libjpeg-dev \
+          libpng-dev \
+          libgif-dev \
+          libtiff-dev \
+          librsvg2-dev \
+          libwebp-dev \
+          libxft-dev \
+          libxinerama-dev \
+          libxrandr-dev \
+          libxfixes-dev \
+          libdbus-1-dev && \
+        rm -rf /var/lib/apt/lists/*; \
+      elif [[ "${FLAVOR}" == "pgtk" ]]; then \
+        apt-get update && \
+        apt-get install -y --no-install-recommends \
+          libgtk-3-dev \
+          libcairo2-dev \
+          libjpeg-dev \
+          libpng-dev \
+          libgif-dev \
+          libtiff-dev \
+          librsvg2-dev \
+          libwebp-dev \
+          libdbus-1-dev && \
+        rm -rf /var/lib/apt/lists/*; \
+      elif [[ "${FLAVOR}" == "terminal" ]]; then \
+        true; \
+      else \
+        echo "Unsupported FLAVOR=${FLAVOR}. Use terminal, gtk-x11, or pgtk." >&2; \
+        exit 2; \
+      fi
+
+  RUN if [[ "${NATIVE}" == "yes" || "${NATIVE}" == "aot" ]]; then \
+        apt-get update && \
+        apt-get install -y --no-install-recommends libgccjit-10-dev && \
+        rm -rf /var/lib/apt/lists/*; \
+      elif [[ "${NATIVE}" == "no" ]]; then \
+        true; \
+      else \
+        echo "Unsupported NATIVE=${NATIVE}. Use no, yes, or aot." >&2; \
+        exit 2; \
+      fi
+
+  WORKDIR /build
+
+  RUN wget -q "https://ftp.gnu.org/gnu/emacs/emacs-${EMACS_VER}.tar.xz" && \
+      tar -xf "emacs-${EMACS_VER}.tar.xz"
+
+  WORKDIR /build/emacs-${EMACS_VER}
+
+  RUN install_prefix="${PREFIX:-/opt/emacs-${EMACS_VER}}" && \
+      configure_flags=( \
+        "--prefix=${install_prefix}" \
+        "--with-modules" \
+      ) && \
+      if [[ "${FLAVOR}" == "terminal" ]]; then \
+        configure_flags+=("--without-x"); \
+      elif [[ "${FLAVOR}" == "gtk-x11" ]]; then \
+        configure_flags+=("--with-x-toolkit=gtk" "--with-cairo"); \
+      elif [[ "${FLAVOR}" == "pgtk" ]]; then \
+        configure_flags+=("--with-pgtk" "--with-cairo"); \
+      fi && \
+      if [[ "${NATIVE}" == "no" ]]; then \
+        configure_flags+=("--with-native-compilation=no"); \
+      elif [[ "${NATIVE}" == "yes" ]]; then \
+        configure_flags+=("--with-native-compilation=yes"); \
+      elif [[ "${NATIVE}" == "aot" ]]; then \
+        configure_flags+=("--with-native-compilation=aot"); \
+      fi && \
+      if [[ "${TREE_SITTER}" == "no" ]]; then \
+        configure_flags+=("--without-tree-sitter"); \
+      fi && \
+      ./configure "${configure_flags[@]}" && \
+      make -j"${JOBS}" && \
+      make install-strip && \
+      mkdir -p /out && \
+      tar -C / -caf "/out/emacs-${EMACS_VER}-aarch64-ubuntu20.04-${FLAVOR}.tar.xz" "${install_prefix#/}" && \
+      file "${install_prefix}/bin/emacs" > "/out/emacs-${EMACS_VER}-aarch64-ubuntu20.04-${FLAVOR}.file.txt" && \
+      "${install_prefix}/bin/emacs" --batch --eval '(princ (format "Emacs %s\n" emacs-version))' \
+        > "/out/emacs-${EMACS_VER}-aarch64-ubuntu20.04-${FLAVOR}.smoke.txt"
+
+  FROM scratch AS artifact
+  COPY --from=build /out/ /
+#+END_SRC
+
+* Maintainer workflow
+
+When changing the Dockerfile, edit only the Dockerfile source block in this README. Then tangle it:
+
+#+BEGIN_SRC bash :exports code
+  emacs --batch README.org --eval '(org-babel-tangle)'
+#+END_SRC
+
+Then rebuild:
+
+#+BEGIN_SRC bash :exports code
+  sudo docker buildx build \
+    --platform linux/arm64 \
+    --target artifact \
+    --output type=local,dest=out \
+    -f Dockerfile.emacs30-jetpack512 \
+    --build-arg EMACS_VER=30.2 \
+    --build-arg FLAVOR=terminal \
+    --build-arg NATIVE=no \
+    --build-arg TREE_SITTER=no \
+    --build-arg JOBS=4 \
+    .
+#+END_SRC
