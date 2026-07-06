@@ -134,8 +134,9 @@ Check the result:
 
 #+BEGIN_SRC bash :exports code
   ls -lh out/
-  cat out/emacs-30.2-aarch64-ubuntu20.04-terminal.file.txt
-  cat out/emacs-30.2-aarch64-ubuntu20.04-terminal.smoke.txt
+  # head -10 out/emacs-30.2-aarch64-ubuntu20.04-terminal.file.txt
+  # echo
+  # head -10 out/emacs-30.2-aarch64-ubuntu20.04-terminal.smoke.txt
 #+END_SRC
 
 The file report should mention ARM aarch64.
@@ -145,7 +146,7 @@ The file report should mention ARM aarch64.
 Use this after the terminal build works.
 
 #+BEGIN_SRC bash :exports code
-  sudo docker buildx build \
+  docker buildx build \
     --platform linux/arm64 \
     --target artifact \
     --output type=local,dest=out \
@@ -192,12 +193,10 @@ mDNS hostname (=f2-smart-controller.local=) and evaluate it once with
   echo "nvidia"
 #+END_SRC
 
-Replace ~jetson-user~ and ~JETSON_IP~ with your real SSH user and target
-address.
 
 #+BEGIN_SRC bash :exports code :var TARGET_HOST=f2sc01-target() :var SSH_PASS=f2sc01-ssh-pass()
   sshpass -p "${SSH_PASS}" scp out/emacs-30.2-aarch64-ubuntu20.04-terminal.tar.xz \
-    jetson-user@${TARGET_HOST}:/tmp/
+    "nvidia@${TARGET_HOST}:/tmp/"
 #+END_SRC
 
 On the Jetson:
@@ -205,15 +204,15 @@ On the Jetson:
 #+BEGIN_SRC bash :exports code
   sudo tar -C / -xaf /tmp/emacs-30.2-aarch64-ubuntu20.04-terminal.tar.xz
 
-  sudo ln -sf /opt/emacs-30.2/bin/emacs /usr/local/bin/emacs30
-  sudo ln -sf /opt/emacs-30.2/bin/emacsclient /usr/local/bin/emacsclient30
+  sudo ln -sf /opt/emacs-30.2/bin/emacs /usr/local/bin/emacs
+  sudo ln -sf /opt/emacs-30.2/bin/emacsclient /usr/local/bin/emacsclient
 #+END_SRC
 
 Test on the Jetson:
 
 #+BEGIN_SRC bash :exports code
-  emacs30 --version
-  emacs30 --batch --eval '(princ system-configuration)'
+  emacs --version
+  emacs --batch --eval '(princ system-configuration)'
   echo
 #+END_SRC
 
