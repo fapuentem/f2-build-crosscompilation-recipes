@@ -3,6 +3,7 @@
 #+DATE: <2026-07-06 Mon>
 #+OPTIONS: toc:2 num:nil
 #+PROPERTY: header-args :results silent :exports both
+#+STARTUP: overview
 
 This repository builds Emacs 30 for a Jetson Orin NX 8GB running
 JetPack 5.1.2.

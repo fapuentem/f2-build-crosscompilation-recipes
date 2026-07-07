@@ -3,6 +3,7 @@
 #+DATE: <2026-07-07 Tue>
 #+OPTIONS: toc:2 num:nil
 #+PROPERTY: header-args :results silent :exports both
+#+STARTUP: overview
 
 This repository builds Quectel Connection Manager for a Jetson Orin NX
 8GB running JetPack 5.1.2.
@@ -225,8 +226,8 @@ Check the result:
 
 #+BEGIN_SRC bash :exports code
   ls -lh out/
-  # cat out/quectel-CM-aarch64-ubuntu20.04.file.txt
-  # cat out/quectel-CM-aarch64-ubuntu20.04.smoke.txt
+  cat out/quectel-CM-aarch64-ubuntu20.04.file.txt
+  cat out/quectel-CM-aarch64-ubuntu20.04.smoke.txt
 #+END_SRC
 
 The file report should mention ARM aarch64.
@@ -267,22 +268,6 @@ This section assumes the tarball is already copied to the Jetson at:
 
 Therefore, extract it from ~/~ and let the archive place the files under
 ~/usr/local/quectel-CM~.
-
-First, remove the broken nested installation:
-
-#+BEGIN_SRC bash :exports code
-  set -eu
-
-  sudo pkill -INT quectel-CM 2>/dev/null || true
-  sudo pkill -TERM quectel-CM 2>/dev/null || true
-
-  sudo rm -f /usr/local/bin/quectel-CM
-  sudo rm -f /usr/local/bin/quectel-mbim-proxy
-  sudo rm -f /usr/local/bin/quectel-atc-proxy
-  sudo rm -f /usr/local/bin/quectel-qmi-proxy
-
-  sudo rm -rf /usr/local/quectel-CM
-#+END_SRC
 
 Inspect the tarball before extracting it:
 
@@ -329,7 +314,6 @@ Install small runtime tools useful for testing and troubleshooting.
 #+BEGIN_SRC bash :exports code
   sudo apt update
   sudo apt install -y iproute2 net-tools udhcpc usbutils libqmi-utils
-
 #+END_SRC
 
 * Prepare the modem on the Jetson
@@ -357,17 +341,12 @@ Stop services that may already control the modem before testing
 
 * Manual test
 
-Replace the APN with the SIM provider APN.
+Replace the APN with the SIM provider APN. Run Quectel CM in verbose
+mode:
 
-#+NAME: sim-apn
-#+BEGIN_SRC sh :results silent :exports none
-  echo "internet.swir"
-#+END_SRC
-
-Run Quectel CM in verbose mode:
-
-#+BEGIN_SRC bash :exports code :var TARGET_HOST=f2sc01-target() :var SSH_PASS=f2sc01-ssh-pass() :var APN=sim-apn()
+#+BEGIN_SRC bash :exports code
   set -eu
+  APN="internet.swir"
   sudo mkdir -p /var/log/quectel-CM
   sudo quectel-CM -s '${APN}' -i wwan0 -v -f /var/log/quectel-CM/quectel-CM.log
 #+END_SRC
@@ -400,13 +379,11 @@ Stop the manual test:
 These checks help confirm that the modem is registered before blaming
 ~quectel-CM~.
 
-#+BEGIN_SRC bash :exports code :var TARGET_HOST=f2sc01-target() :var SSH_PASS=f2sc01-ssh-pass()
-  sshpass -p "${SSH_PASS}" ssh "nvidia@${TARGET_HOST}" '
-    sudo qmicli -d /dev/cdc-wdm0 --dms-get-operating-mode
-    sudo qmicli -d /dev/cdc-wdm0 --uim-get-card-status
-    sudo qmicli -d /dev/cdc-wdm0 --nas-get-serving-system
-    sudo qmicli -d /dev/cdc-wdm0 --nas-get-signal-strength
-  '
+#+BEGIN_SRC bash :exports code
+  sudo qmicli -d /dev/cdc-wdm0 --dms-get-operating-mode
+  sudo qmicli -d /dev/cdc-wdm0 --uim-get-card-status
+  sudo qmicli -d /dev/cdc-wdm0 --nas-get-serving-system
+  sudo qmicli -d /dev/cdc-wdm0 --nas-get-signal-strength
 #+END_SRC
 
 Expected signs of success:
@@ -417,58 +394,7 @@ Expected signs of success:
 - Signal strength is available.
 - ~wwan0~ receives an IPv4 address or the CM log shows IPv4 settings.
 
-* Optional systemd service
-
-Create a service only after the manual test works.
-
-#+NAME: quectel-cm-service
-#+BEGIN_SRC systemd :tangle quectel-CM.service
-  [Unit]
-  Description=Quectel Connection Manager
-  After=network-pre.target
-  Wants=network-pre.target
-
-  [Service]
-  Type=simple
-  ExecStart=/usr/local/bin/quectel-CM -s internet -i wwan0 -v -f /var/log/quectel-CM/quectel-CM.log
-  Restart=always
-  RestartSec=5
-
-  [Install]
-  WantedBy=multi-user.target
-#+END_SRC
-
-Copy and enable the service:
-
-#+BEGIN_SRC bash :exports code :var TARGET_HOST=f2sc01-target() :var SSH_PASS=f2sc01-ssh-pass()
-  sshpass -p "${SSH_PASS}" scp quectel-CM.service \
-    "nvidia@${TARGET_HOST}:/tmp/quectel-CM.service"
-
-  sshpass -p "${SSH_PASS}" ssh "nvidia@${TARGET_HOST}" '
-    sudo mkdir -p /var/log/quectel-CM
-    sudo mv /tmp/quectel-CM.service /etc/systemd/system/quectel-CM.service
-    sudo systemctl daemon-reload
-    sudo systemctl enable --now quectel-CM.service
-    systemctl status quectel-CM.service --no-pager
-  '
-#+END_SRC
-
-Check the service logs:
-
-#+BEGIN_SRC bash :exports code :var TARGET_HOST=f2sc01-target() :var SSH_PASS=f2sc01-ssh-pass()
-  sshpass -p "${SSH_PASS}" ssh "nvidia@${TARGET_HOST}" '
-    journalctl -u quectel-CM.service -n 100 --no-pager
-    sudo tail -n 100 /var/log/quectel-CM/quectel-CM.log
-  '
-#+END_SRC
-
 * Troubleshooting
-
-** Build fails with missing source files
-
-Run the source sanity check. If ~mbim-cm.c~ or ~quectel-qmi-proxy.c~ is
-missing, copy them from the original Quectel Connection Manager release
-into the repository and rebuild.
 
 ** Build fails with warnings treated as errors
 
@@ -493,13 +419,11 @@ the warnings.
 
 Check raw IP mode and routes:
 
-#+BEGIN_SRC bash :exports code :var TARGET_HOST=f2sc01-target() :var SSH_PASS=f2sc01-ssh-pass()
-  sshpass -p "${SSH_PASS}" ssh "nvidia@${TARGET_HOST}" '
-    cat /sys/class/net/wwan0/qmi/raw_ip 2>/dev/null || true
-    ip addr show wwan0
-    ip route show
-    sudo tail -n 200 /var/log/quectel-CM/quectel-CM.log
-  '
+#+BEGIN_SRC bash :exports code
+  cat /sys/class/net/wwan0/qmi/raw_ip 2>/dev/null || true
+  ip addr show wwan0
+  ip route show
+  sudo tail -n 200 /var/log/quectel-CM/quectel-CM.log
 #+END_SRC
 
 If Ethernet is still the preferred default route, add explicit route
