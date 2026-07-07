@@ -257,46 +257,89 @@ Copy the build artifact:
     "nvidia@${TARGET_HOST}:/tmp/"
 #+END_SRC
 
-Install it on the Jetson:
+* Install it on the Jetson
 
-#+BEGIN_SRC bash :exports code :var TARGET_HOST=f2sc01-target() :var SSH_PASS=f2sc01-ssh-pass()
-  sshpass -p "${SSH_PASS}" ssh "nvidia@${TARGET_HOST}" '
-    set -eu
-    sudo mkdir -p /usr/local/quectel-CM
-    sudo tar -C /usr/local/quectel-CM --strip-components=1 \
-      -xaf /tmp/quectel-CM-aarch64-ubuntu20.04.tar.xz
+This section assumes the tarball is already copied to the Jetson at:
 
-    sudo ln -sf /usr/local/quectel-CM/bin/quectel-CM /usr/local/bin/quectel-CM
-    sudo ln -sf /usr/local/quectel-CM/bin/quectel-mbim-proxy /usr/local/bin/quectel-mbim-proxy
-    sudo ln -sf /usr/local/quectel-CM/bin/quectel-atc-proxy /usr/local/bin/quectel-atc-proxy
+#+BEGIN_EXAMPLE
+/tmp/quectel-CM-aarch64-ubuntu20.04.tar.xz
+#+END_EXAMPLE
 
-    if [ -x /usr/local/quectel-CM/bin/quectel-qmi-proxy ]; then
-      sudo ln -sf /usr/local/quectel-CM/bin/quectel-qmi-proxy /usr/local/bin/quectel-qmi-proxy
-    fi
-  '
+Therefore, extract it from ~/~ and let the archive place the files under
+~/usr/local/quectel-CM~.
+
+First, remove the broken nested installation:
+
+#+BEGIN_SRC bash :exports code
+  set -eu
+
+  sudo pkill -INT quectel-CM 2>/dev/null || true
+  sudo pkill -TERM quectel-CM 2>/dev/null || true
+
+  sudo rm -f /usr/local/bin/quectel-CM
+  sudo rm -f /usr/local/bin/quectel-mbim-proxy
+  sudo rm -f /usr/local/bin/quectel-atc-proxy
+  sudo rm -f /usr/local/bin/quectel-qmi-proxy
+
+  sudo rm -rf /usr/local/quectel-CM
 #+END_SRC
+
+Inspect the tarball before extracting it:
+
+#+BEGIN_SRC bash :exports code
+  tar -tf /tmp/quectel-CM-aarch64-ubuntu20.04.tar.xz | head -n 30
+#+END_SRC
+
+If you see paths beginning with ~usr/local/quectel-CM/~, install it with this command:
+
+#+BEGIN_SRC bash :exports code
+  set -eu
+
+  sudo tar -C / -xaf /tmp/quectel-CM-aarch64-ubuntu20.04.tar.xz
+
+  sudo ln -sf /usr/local/quectel-CM/bin/quectel-CM /usr/local/bin/quectel-CM
+  sudo ln -sf /usr/local/quectel-CM/bin/quectel-mbim-proxy /usr/local/bin/quectel-mbim-proxy
+  sudo ln -sf /usr/local/quectel-CM/bin/quectel-atc-proxy /usr/local/bin/quectel-atc-proxy
+
+  if [ -x /usr/local/quectel-CM/bin/quectel-qmi-proxy ]; then
+    sudo ln -sf /usr/local/quectel-CM/bin/quectel-qmi-proxy /usr/local/bin/quectel-qmi-proxy
+  fi
+#+END_SRC
+
+Verify the installation:
+
+#+BEGIN_SRC bash :exports code
+  which quectel-CM
+  readlink -f "$(which quectel-CM)"
+  ls -l /usr/local/quectel-CM/bin/
+  file /usr/local/quectel-CM/bin/quectel-CM
+#+END_SRC
+
+Expected result:
+
+#+BEGIN_EXAMPLE
+/usr/local/bin/quectel-CM
+/usr/local/quectel-CM/bin/quectel-CM
+#+END_EXAMPLE
 
 * Runtime packages on the Jetson
 
 Install small runtime tools useful for testing and troubleshooting.
 
-#+BEGIN_SRC bash :exports code :var TARGET_HOST=f2sc01-target() :var SSH_PASS=f2sc01-ssh-pass()
-  sshpass -p "${SSH_PASS}" ssh "nvidia@${TARGET_HOST}" '
-    sudo apt update
-    sudo apt install -y iproute2 net-tools udhcpc usbutils libqmi-utils
-  '
+#+BEGIN_SRC bash :exports code
+  sudo apt update
+  sudo apt install -y iproute2 net-tools udhcpc usbutils libqmi-utils
+
 #+END_SRC
 
 * Prepare the modem on the Jetson
 
 Check that the Quectel modem is visible:
 
-#+BEGIN_SRC bash :exports code :var TARGET_HOST=f2sc01-target() :var SSH_PASS=f2sc01-ssh-pass()
-  sshpass -p "${SSH_PASS}" ssh "nvidia@${TARGET_HOST}" '
-    lsusb | grep -i quectel || true
-    ls -l /dev/cdc-wdm* 2>/dev/null || true
-    ip link show | grep -E "wwan|usb" || true
-  '
+#+BEGIN_SRC bash :exports code
+  lsusb | grep -i quectel || true
+  ls -l /dev/cdc-wdm* 2>/dev/null || true
+  ip link show | grep -E "wwan|usb" || true
 #+END_SRC
 
 For QMI mode, the common Jetson interface is ~wwan0~ with a control
@@ -305,13 +348,11 @@ channel such as ~/dev/cdc-wdm0~.
 Stop services that may already control the modem before testing
 ~quectel-CM~ manually:
 
-#+BEGIN_SRC bash :exports code :var TARGET_HOST=f2sc01-target() :var SSH_PASS=f2sc01-ssh-pass()
-  sshpass -p "${SSH_PASS}" ssh "nvidia@${TARGET_HOST}" '
-    sudo systemctl stop ModemManager 2>/dev/null || true
-    sudo systemctl stop NetworkManager 2>/dev/null || true
-    sudo pkill -INT quectel-CM 2>/dev/null || true
-    sudo pkill -TERM quectel-CM 2>/dev/null || true
-  '
+#+BEGIN_SRC bash :exports code
+  sudo systemctl stop ModemManager 2>/dev/null || true
+  sudo systemctl stop NetworkManager 2>/dev/null || true
+  sudo pkill -INT quectel-CM 2>/dev/null || true
+  sudo pkill -TERM quectel-CM 2>/dev/null || true
 #+END_SRC
 
 * Manual test
@@ -320,46 +361,38 @@ Replace the APN with the SIM provider APN.
 
 #+NAME: sim-apn
 #+BEGIN_SRC sh :results silent :exports none
-  echo "internet"
+  echo "internet.swir"
 #+END_SRC
 
 Run Quectel CM in verbose mode:
 
 #+BEGIN_SRC bash :exports code :var TARGET_HOST=f2sc01-target() :var SSH_PASS=f2sc01-ssh-pass() :var APN=sim-apn()
-  sshpass -p "${SSH_PASS}" ssh "nvidia@${TARGET_HOST}" "
-    set -eu
-    sudo mkdir -p /var/log/quectel-CM
-    sudo quectel-CM -s '${APN}' -i wwan0 -v -f /var/log/quectel-CM/quectel-CM.log
-  "
+  set -eu
+  sudo mkdir -p /var/log/quectel-CM
+  sudo quectel-CM -s '${APN}' -i wwan0 -v -f /var/log/quectel-CM/quectel-CM.log
 #+END_SRC
 
 In another terminal, check the interface, routes, DNS, and connectivity:
 
-#+BEGIN_SRC bash :exports code :var TARGET_HOST=f2sc01-target() :var SSH_PASS=f2sc01-ssh-pass()
-  sshpass -p "${SSH_PASS}" ssh "nvidia@${TARGET_HOST}" '
-    ip addr show wwan0 || true
-    ip route show
-    resolvectl status 2>/dev/null || cat /etc/resolv.conf
+#+BEGIN_SRC bash :exports code
+  ip addr show wwan0 || true
+  ip route show
+  resolvectl status 2>/dev/null || cat /etc/resolv.conf
 
-    ping -I wwan0 -c 4 8.8.8.8
-    ping -I wwan0 -c 4 google.com
-  '
+  ping -I wwan0 -c 4 8.8.8.8
+  ping -I wwan0 -c 4 google.com
 #+END_SRC
 
 Inspect the log:
 
-#+BEGIN_SRC bash :exports code :var TARGET_HOST=f2sc01-target() :var SSH_PASS=f2sc01-ssh-pass()
-  sshpass -p "${SSH_PASS}" ssh "nvidia@${TARGET_HOST}" '
-    sudo tail -n 100 /var/log/quectel-CM/quectel-CM.log
-  '
+#+BEGIN_SRC bash :exports code
+  sudo tail -n 100 /var/log/quectel-CM/quectel-CM.log
 #+END_SRC
 
 Stop the manual test:
 
-#+BEGIN_SRC bash :exports code :var TARGET_HOST=f2sc01-target() :var SSH_PASS=f2sc01-ssh-pass()
-  sshpass -p "${SSH_PASS}" ssh "nvidia@${TARGET_HOST}" '
-    sudo pkill -INT quectel-CM 2>/dev/null || true
-  '
+#+BEGIN_SRC bash :exports code
+  sudo pkill -INT quectel-CM 2>/dev/null || true
 #+END_SRC
 
 * QMI diagnostic checks
