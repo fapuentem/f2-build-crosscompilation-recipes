@@ -329,14 +329,219 @@ Check that the Quectel modem is visible:
 For QMI mode, the common Jetson interface is ~wwan0~ with a control
 channel such as ~/dev/cdc-wdm0~.
 
-Stop services that may already control the modem before testing
-~quectel-CM~ manually:
+** Clean up older quectel-CM binaries and services
+
+*** Stop the old service and restart timer
 
 #+BEGIN_SRC bash :exports code
-  sudo systemctl stop ModemManager 2>/dev/null || true
-  sudo systemctl stop NetworkManager 2>/dev/null || true
-  sudo pkill -INT quectel-CM 2>/dev/null || true
-  sudo pkill -TERM quectel-CM 2>/dev/null || true
+  sudo systemctl stop quectel-cm.service 2>/dev/null || true
+  sudo systemctl stop quectel-cm-restart.timer 2>/dev/null || true
+  sudo systemctl stop quectel-cm-restart.service 2>/dev/null || true
+#+END_SRC
+
+*** Disable them so they do not restart during installation
+
+#+BEGIN_SRC bash :exports code
+  sudo systemctl disable quectel-cm.service 2>/dev/null || true
+  sudo systemctl disable quectel-cm-restart.timer 2>/dev/null || true
+  sudo systemctl disable quectel-cm-restart.service 2>/dev/null || true
+#+END_SRC
+
+*** Kill any remaining Quectel-CM process
+
+#+BEGIN_SRC bash :exports code
+  sudo pkill -TERM -f 'quectel-CM' 2>/dev/null || true
+  sleep 2
+  sudo pkill -KILL -f 'quectel-CM' 2>/dev/null || true
+#+END_SRC
+
+*** Backup the old systemd units
+
+#+BEGIN_SRC bash :exports code
+  sudo mkdir -p /opt/quectel-CM-backup/systemd
+  sudo cp -a /etc/systemd/system/quectel-cm*.service /opt/quectel-CM-backup/systemd/ 2>/dev/null || true
+  sudo cp -a /etc/systemd/system/quectel-cm*.timer /opt/quectel-CM-backup/systemd/ 2>/dev/null || true
+#+END_SRC
+
+*** Remove the old systemd units
+
+#+BEGIN_SRC bash :exports code
+  sudo rm -f /etc/systemd/system/quectel-cm.service
+  sudo rm -f /etc/systemd/system/quectel-cm-restart.service
+  sudo rm -f /etc/systemd/system/quectel-cm-restart.timer
+#+END_SRC
+
+*** Backup old binaries
+
+#+BEGIN_SRC bash :exports code
+  sudo mkdir -p /opt/quectel-CM-backup/bin
+  for f in \
+    /usr/local/bin/quectel-CM \
+    /usr/local/bin/quectel-qmi-proxy \
+    /usr/local/bin/quectel-mbim-proxy \
+    /usr/local/bin/quectel-atc-proxy \
+    /usr/local/bin/quectel-qrtr-proxy
+  do
+    if [ -e "$f" ]; then
+      sudo cp -a "$f" /opt/quectel-CM-backup/bin/
+    fi
+  done
+#+END_SRC
+
+*** Remove old binaries
+
+#+BEGIN_SRC bash :exports code
+  sudo rm -f /usr/local/bin/quectel-CM
+  sudo rm -f /usr/local/bin/quectel-qmi-proxy
+  sudo rm -f /usr/local/bin/quectel-mbim-proxy
+  sudo rm -f /usr/local/bin/quectel-atc-proxy
+  sudo rm -f /usr/local/bin/quectel-qrtr-proxy
+#+END_SRC
+
+*** Backup and clean old log
+
+#+BEGIN_SRC bash :exports code
+  sudo mkdir -p /opt/quectel-CM-backup/logs
+  if [ -e /var/log/quectel-CM.log ]; then
+    sudo cp -a /var/log/quectel-CM.log /opt/quectel-CM-backup/logs/quectel-CM.log.$(date +%Y%m%d-%H%M%S)
+  fi
+  sudo rm -f /var/log/quectel-CM.log
+#+END_SRC
+
+*** Reload systemd
+
+#+BEGIN_SRC bash :exports code
+  sudo systemctl daemon-reload
+  sudo systemctl reset-failed
+#+END_SRC
+
+*** Verify cleanup
+
+#+BEGIN_SRC bash :exports code
+  which quectel-CM || true
+  systemctl list-unit-files | grep -i quectel || true
+  systemctl list-units --all | grep -i quectel || true
+  ps aux | grep -i '[q]uectel'
+#+END_SRC
+
+** Clean the network state
+
+#+BEGIN_SRC bash :exports code
+  # Optional but useful before a fresh test
+  sudo ip link set wwan0 down 2>/dev/null || true
+  sudo ip addr flush dev wwan0 2>/dev/null || true
+  sudo ip link set wwan0 up 2>/dev/null || true
+
+  # Check modem-related devices
+  ls -l /dev/cdc-wdm* 2>/dev/null || true
+  ip link show | grep -E 'wwan|usb|rmnet' || true
+#+END_SRC
+
+* Update udhcpc default.script
+
+#+BEGIN_SRC bash :exports code
+    sudo cp /etc/udhcpc/default.script /etc/udhcpc/default.script.bak.$(date +%Y%m%d-%H%M%S)
+
+    sudo tee /etc/udhcpc/default.script >/dev/null <<'EOF'
+    #!/bin/sh
+
+    RESOLV_CONF="/etc/resolv.conf"
+    IPCMD="$(command -v ip)"
+    metric_base=2357
+
+    netmask_to_prefix() {
+        case "$1" in
+            255.255.255.255) echo 32 ;;
+            255.255.255.254) echo 31 ;;
+            255.255.255.252) echo 30 ;;
+            255.255.255.248) echo 29 ;;
+            255.255.255.240) echo 28 ;;
+            255.255.255.224) echo 27 ;;
+            255.255.255.192) echo 26 ;;
+            255.255.255.128) echo 25 ;;
+            255.255.255.0)   echo 24 ;;
+            255.255.254.0)   echo 23 ;;
+            255.255.252.0)   echo 22 ;;
+            255.255.248.0)   echo 21 ;;
+            255.255.240.0)   echo 20 ;;
+            255.255.224.0)   echo 19 ;;
+            255.255.192.0)   echo 18 ;;
+            255.255.128.0)   echo 17 ;;
+            255.255.0.0)     echo 16 ;;
+            ,*) echo 24 ;;
+        esac
+    }
+
+    case "$1" in
+        bound|renew)
+            prefix="$(netmask_to_prefix "$subnet")"
+
+            echo "$0: Configuring $interface as $ip/$prefix"
+            $IPCMD link set dev "$interface" up
+            $IPCMD address flush dev "$interface"
+
+            if [ -n "$broadcast" ]; then
+                $IPCMD address add "$ip/$prefix" broadcast "$broadcast" dev "$interface"
+            else
+                $IPCMD address add "$ip/$prefix" dev "$interface"
+            fi
+
+            if [ -n "$router" ]; then
+                echo "$0: Resetting default routes for $interface"
+                while $IPCMD route del default dev "$interface" 2>/dev/null; do :; done
+
+                metric="$metric_base"
+                for i in $router; do
+                    echo "$0: Adding default route via $i dev $interface metric $metric"
+                    $IPCMD route replace default via "$i" dev "$interface" metric "$metric" onlink
+                    metric=$((metric + 1))
+                done
+            fi
+
+            R=""
+            [ -n "$domain" ] && R="domain $domain
+    "
+           dns="8.8.8.8 4.4.4.4"
+
+           for i in $dns; do
+                echo "$0: Adding DNS $i"
+                R="${R}nameserver $i
+    "
+            done
+
+            if [ -x /sbin/resolvconf ]; then
+                echo -n "$R" | resolvconf -a "${interface}.udhcpc"
+            else
+                echo -n "$R" > "$RESOLV_CONF"
+            fi
+            ;;
+
+        deconfig)
+            if [ -x /sbin/resolvconf ]; then
+                resolvconf -d "${interface}.udhcpc"
+            fi
+            $IPCMD address flush dev "$interface"
+            while $IPCMD route del default dev "$interface" 2>/dev/null; do :; done
+            ;;
+
+        leasefail)
+            echo "$0: Lease failed: $message"
+            ;;
+
+        nak)
+            echo "$0: Received a NAK: $message"
+            ;;
+
+        ,*)
+            echo "$0: Unknown udhcpc command: $1"
+            exit 1
+            ;;
+    esac
+
+    exit 0
+    EOF
+
+    sudo chmod 755 /etc/udhcpc/default.script
 #+END_SRC
 
 * Manual test
@@ -379,11 +584,20 @@ Stop the manual test:
 These checks help confirm that the modem is registered before blaming
 ~quectel-CM~.
 
+Important: run these checks with ~quectel-CM~ stopped. In our current setup,
+~qmicli~ only works reliably after stopping ~quectel-CM~ and restarting
+~ModemManager~. This avoids both tools competing for ~/dev/cdc-wdm0~.
+
 #+BEGIN_SRC bash :exports code
-  sudo qmicli -d /dev/cdc-wdm0 --dms-get-operating-mode
-  sudo qmicli -d /dev/cdc-wdm0 --uim-get-card-status
-  sudo qmicli -d /dev/cdc-wdm0 --nas-get-serving-system
-  sudo qmicli -d /dev/cdc-wdm0 --nas-get-signal-strength
+  # sudo systemctl stop quectel-cm.service
+
+  sudo systemctl restart ModemManager.service
+  sleep 3
+
+  sudo qmicli -d /dev/cdc-wdm0 --device-open-proxy --dms-get-operating-mode
+  sudo qmicli -d /dev/cdc-wdm0 --device-open-proxy --uim-get-card-status
+  sudo qmicli -d /dev/cdc-wdm0 --device-open-proxy --nas-get-serving-system
+  sudo qmicli -d /dev/cdc-wdm0 --device-open-proxy --nas-get-signal-strength
 #+END_SRC
 
 Expected signs of success:
@@ -392,7 +606,6 @@ Expected signs of success:
 - Operating mode is online.
 - Serving system is registered.
 - Signal strength is available.
-- ~wwan0~ receives an IPv4 address or the CM log shows IPv4 settings.
 
 * Troubleshooting
 
@@ -436,7 +649,8 @@ Only one manager should control the modem during the test. Stop the
 other managers while testing manually:
 
 #+BEGIN_SRC bash :exports code
-  sudo systemctl stop ModemManager NetworkManager
+  sudo systemctl stop ModemManager
+  sudo systemctl disable ModemManager
 #+END_SRC
 
 For production, decide whether the F2 device uses ~quectel-CM~ directly
